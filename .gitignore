@@ -1,0 +1,12 @@
+# Ignore pycache directories at any level
+**/__pycache__/
+
+# Ignore compiled bytecode at any level
+**/*.pyc
+**/*.pyo
+**/*.pyd
+
+# Ignore local environment or build artifacts if present
+**/build/
+**/dist/
+**/*.egg-info/
