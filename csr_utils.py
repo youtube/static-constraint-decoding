@@ -1,3 +1,17 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import gc
 import numpy as np
 
@@ -89,7 +103,7 @@ def build_sparse_matrix_fast(fresh_sids, vocab_size=2048, d=2):
   all_p, all_t, all_c = [], [], []
   for depth in range(1, L):
     mask = is_new[:, depth]
-    p = state_ids[mask, depth-1] # ID of the prefix of length 'depth'
+    p = state_ids[mask, depth-1]  # ID of the prefix of length 'depth'
     t = fresh_sids[mask, depth].astype(np.int32)  # The next token
 
     # If we are at the last token, the child state is 0 (terminal).
@@ -131,7 +145,7 @@ def build_sparse_matrix_fast(fresh_sids, vocab_size=2048, d=2):
   # --- 7. LAYER MAX BRANCHES (Static Compilation Metadata) ---
   # Accelerator compilers require static output shapes. We calculate the
   # maximum number of possible child tokens at each level of the trie.
-  lmb = [np.sum(start_mask)] # Max branches out of the root.
+  lmb = [np.sum(start_mask)]  # Max branches out of the root.
 
   # Max branches out of Level-0 tokens (IDs 1 to vocab_size).
   l0_counts = counts[1:vocab_size + 1]
@@ -147,7 +161,7 @@ def build_sparse_matrix_fast(fresh_sids, vocab_size=2048, d=2):
 
   # Pad to SID length L.
   while len(lmb) < L:
-      lmb.append(1)
+    lmb.append(1)
 
   # --- 8. FINAL PACKING ---
   # We create a flat transition table [Token, NextState].
