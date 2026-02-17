@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "static_decoding"
+version = "0.1.0"
+description = "Fast, accelerator-native constrained decoding for generative retrieval."
+dependencies = [
+    "torch",
+    "numpy",
+    "scipy",
+    "pandas",
+    "matplotlib"
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["static_decoding*"]
+namespaces = true
