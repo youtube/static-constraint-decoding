@@ -1,6 +1,9 @@
 # Ignore pycache directories at any level
 **/__pycache__/
 
+# Ignore python notebook checkpoints
+**/*.ipynb_checkpoints/
+
 # Ignore compiled bytecode at any level
 **/*.pyc
 **/*.pyo
