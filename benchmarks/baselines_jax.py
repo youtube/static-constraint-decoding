@@ -321,13 +321,13 @@ def make_hash_bitmap_fn():
 
 
 # =============================================================================
-# 5. BASELINE: PPV (Point-wise Validation / Binary Search)
+# 5. BASELINE: PPV (Parallel Prefix Verification / Binary Search)
 # =============================================================================
 
 
 @functools.partial(jit, static_argnames=["M", "step"])
 def ppv_batch_logic(flat_logprobs, history, step, sorted_sids, M):
-  """Implements the PPV (Point-wise Validation) algorithm.
+  """Implements the PPV (Parallel Prefix Verification) algorithm.
 
   PPV performs binary search across a sorted list of Semantic IDs to validate
   individual candidate extensions. This baseline corresponds to the method
