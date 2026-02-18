@@ -12,34 +12,56 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from csr_utils import build_sparse_matrix_fast
 import numpy as np
-from static.decoding_pt import sparse_transition_packed_torch
+from static_decoding.csr_utils import build_static_index
+from static_decoding.decoding_pt import RandomModel
+from static_decoding.decoding_pt import sparse_transition_torch
 import torch
 
 
-def run_validity_check(vocab_size, num_constraints, sid_len, beam_size, d_dense, device):
+def run_validity_check(
+    vocab_size, num_constraints, sid_len, beam_size, d_dense, device
+):
+  """Executes a single end-to-end validity test for a given configuration.
+
+  This function synthesizes a random constraint graph, builds the STATIC index,
+  and executes the constrained beam search using a dummy RandomModel. It then
+  verifies that 100% of the decoded sequences are present in the original
+  constraint set.
+
+  Args:
+      vocab_size (int): Size of the token vocabulary.
+      num_constraints (int): Number of valid Semantic IDs to generate.
+      sid_len (int): Length of each Semantic ID.
+      beam_size (int): Beam width for the search.
+      d_dense (int): Number of dense lookup layers to use in the index.
+      device (torch.device): Accelerator device (CUDA or CPU).
   """
-  Executes a single end-to-end validity test for a given configuration.
-  """
-  print(f"  [Trial] V={vocab_size}, N={num_constraints}, L={sid_len}, beam={beam_size}, d={d_dense}")
+  print(
+      f"  [Trial] V={vocab_size}, N={num_constraints}, L={sid_len},"
+      f" beam={beam_size}, d={d_dense}"
+  )
 
   # 1. Generate unique random Semantic IDs
   # SIDs are generated as (N, L) arrays
-  sids = np.random.randint(0, vocab_size, size=(num_constraints, sid_len), dtype=np.int32)
+  sids = np.random.randint(
+      0, vocab_size, size=(num_constraints, sid_len), dtype=np.int32
+  )
   sids = np.unique(sids, axis=0)
   actual_n = sids.shape[0]
 
   # SIDs must be sorted for the CSR builder logic
-  sids = sids[np.lexsort([sids[:, i] for i in range(sid_len-1, -1, -1)])]
+  sids = sids[np.lexsort([sids[:, i] for i in range(sid_len - 1, -1, -1)])]
 
   # 2. Build the STATIC Index
   # This synthesizes the Start Mask, Dense Specialization tables, and CSR matrix
-  p_csr, indptr, lmb, s_mask, d_mask, d_states = build_sparse_matrix_fast(
+  p_csr, indptr, lmb, s_mask, d_mask, d_states = build_static_index(
       sids, vocab_size, d=d_dense
   )
 
-  # 3. Move components to the accelerator device
+  # 3. Instantiate the Model and Index on Device
+  model = RandomModel(vocab_size, device)
+
   p_csr_t = torch.tensor(p_csr, dtype=torch.long, device=device)
   indptr_t = torch.tensor(indptr, dtype=torch.long, device=device)
   s_mask_t = torch.tensor(s_mask, dtype=torch.bool, device=device)
@@ -51,11 +73,12 @@ def run_validity_check(vocab_size, num_constraints, sid_len, beam_size, d_dense,
 
   # 4. Run Constrained Beam Search
   # We use batch_size=2 to test parallel execution
-  outputs = sparse_transition_packed_torch(
+  outputs = sparse_transition_torch(
+      model=model,
       batch_size=2,
       beam_size=test_beam_size,
       tokens_per_beam=10,
-      pad_token=0,
+      start_token=0,
       max_sample_len=sid_len,
       vocab_size=vocab_size,
       max_branch_factors=lmb,
@@ -65,7 +88,7 @@ def run_validity_check(vocab_size, num_constraints, sid_len, beam_size, d_dense,
       dense_mask=d_mask_t,
       dense_states=d_states_t,
       device=device,
-      d_dense=d_dense
+      d_dense=d_dense,
   )
 
   # 5. Verify results against the original set
@@ -83,16 +106,14 @@ def run_validity_check(vocab_size, num_constraints, sid_len, beam_size, d_dense,
 
 
 def test_suite_end_to_end():
-  """
-  Runs a suite of validity checks across different trie depths and dense configurations.
-  """
+  """Runs a suite of validity checks across different trie depths and dense configurations."""
   device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
   print(f">>> Starting STATIC Decoding Validity Test Suite on {device}...")
 
   # Define test configurations: (vocab, N, L, beam, d)
   configs = [
       (100, 50, 5, 10, 2),  # Standard d=2 config
-      (50, 20, 8, 5, 1),   # Single-layer dense config
+      (50, 20, 8, 5, 1),  # Single-layer dense config
   ]
 
   for v, n, l, b, d in configs:
@@ -104,6 +125,7 @@ def test_suite_end_to_end():
       raise e
 
   print("\n>>> ALL DECODING VALIDITY TESTS PASSED SUCCESSFULLY! <<<")
+
 
 if __name__ == "__main__":
   test_suite_end_to_end()

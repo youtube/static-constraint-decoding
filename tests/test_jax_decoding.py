@@ -12,11 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from csr_utils import build_sparse_matrix_fast
 import jax
 import jax.numpy as jnp
 import numpy as np
-from static.decoding_jax import sparse_transition_packed_jit
+from static_decoding.csr_utils import build_static_index
+from static_decoding.decoding_jax import RandomModel
+from static_decoding.decoding_jax import sparse_transition_jax
 
 
 def run_validity_check(
@@ -41,7 +42,7 @@ def run_validity_check(
 
   # 2. Build the STATIC Index
   # This synthesizes the Start Mask, Dense Specialization tables, and CSR matrix
-  p_csr, indptr, lmb, s_mask, d_mask, d_states = build_sparse_matrix_fast(
+  p_csr, indptr, lmb, s_mask, d_mask, d_states = build_static_index(
       sids, vocab_size, d=d_dense
   )
 
@@ -55,15 +56,19 @@ def run_validity_check(
   # Ensure beam size doesn't exceed total valid items to avoid 'filler' beams
   test_beam_size = min(beam_size, actual_n)
 
-  # 4. Run Constrained Beam Search
+  # 4. Instantiate the Random Model
+  model = RandomModel(vocab_size)
+
+  # 5. Run Constrained Beam Search
   # We use batch_size=2 to test parallel execution
   key, subkey = jax.random.split(key)
-  outputs = sparse_transition_packed_jit(
-      subkey,
+  outputs = sparse_transition_jax(
+      model=model,
+      key=subkey,
       batch_size=2,
       beam_size=test_beam_size,
       tokens_per_beam=10,
-      pad_token=0,
+      start_token=0,
       max_sample_len=sid_len,
       vocab_size=vocab_size,
       max_branch_factors=lmb,
@@ -75,7 +80,7 @@ def run_validity_check(
       d_dense=d_dense,
   )
 
-  # 5. Verify results against the original set
+  # 6. Verify results against the original set
   valid_set = {tuple(row) for row in sids}
   decoded_array = np.array(outputs)
 

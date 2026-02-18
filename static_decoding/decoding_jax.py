@@ -18,28 +18,6 @@ from jax import lax
 import jax.numpy as jnp
 
 
-def get_probs(shape, key):
-  """Generates mock logits for testing and benchmarking.
-
-  NOTE: This function generates probabilities randomly using a uniform
-  distribution rather than using a real trained model. It is intended
-  strictly for performance profiling and unit testing.
-
-  Args:
-      shape (tuple): The desired output shape, e.g., (batch_size, 1,
-        vocab_size).
-      key (jax.random.PRNGKey): JAX PRNG key for random number generation.
-
-  Returns:
-      tuple: A tuple containing:
-          - logits (jnp.ndarray): The randomly generated logits.
-          - next_key (jax.random.PRNGKey): The next PRNG key for
-          reproducibility.
-  """
-  key, subkey = jax.random.split(key)
-  return jax.random.uniform(subkey, shape, minval=0, maxval=1), key
-
-
 def _gather_beams(x, beam_indices):
   """Efficiently gathers beam data across a batch during the selection step.
 
@@ -128,25 +106,58 @@ def generate_and_apply_logprobs_mask(
   return safe_logprobs, dense_indices, dense_data
 
 
+class RandomModel:
+  """A dummy model that acts like a Transformer but outputs random logits.
+
+  Used to benchmark the throughput of the decoding harness without the
+  computational overhead of a real neural network.
+  """
+
+  def __init__(self, vocab_size):
+    self.vocab_size = vocab_size
+
+  def __call__(self, input_ids, key):
+    """Generates random logits for the next token prediction.
+
+    Args:
+        input_ids (jnp.ndarray): Shape (batch_size, seq_len)
+        key (jax.random.PRNGKey): JAX PRNG key.
+
+    Returns:
+        tuple: (logits, next_key)
+            - logits: Shape (batch_size, 1, vocab_size)
+            - next_key: The updated PRNG key.
+    """
+    batch_size = input_ids.shape[0]
+    key, subkey = jax.random.split(key)
+    # Output random logits [0, 1]
+    logits = jax.random.uniform(
+        subkey, (batch_size, 1, self.vocab_size), minval=0, maxval=1
+    )
+    return logits, key
+
+
 @functools.partial(
     jax.jit,
     static_argnames=(
+        "model",
         "batch_size",
         "beam_size",
         "tokens_per_beam",
-        "pad_token",
+        "start_token",
         "max_sample_len",
         "vocab_size",
         "max_branch_factors",
         "d_dense",
     ),
 )
-def sparse_transition_packed_jit(
+def sparse_transition_jax(
+    model,
     key,
     batch_size,
     beam_size,
     tokens_per_beam,
-    pad_token,
+    start_token,
     max_sample_len,
     vocab_size,
     max_branch_factors,
@@ -157,7 +168,7 @@ def sparse_transition_packed_jit(
     dense_states,
     d_dense=2,
 ):
-  """Main harness for STATIC constrained beam search.
+  """Main harness for STATIC constrained beam search using a JAX model.
 
   This function executes the full autoregressive decoding loop. It uses a hybrid
   approach, specializing the first 'd_dense' codewords into dense lookup tables
@@ -165,67 +176,77 @@ def sparse_transition_packed_jit(
   high-cardinality "sparse tail".
 
   Args:
-      key (jax.random.PRNGKey): PRNG key for generating mock logits.
+      model (Callable): A callable (or object) that takes (input_ids, key) and
+        returns (logits, new_key).
+      key (jax.random.PRNGKey): Initial JAX PRNG key.
       batch_size (int): Number of sequences to decode in parallel.
       beam_size (int): Number of beams to maintain per sequence.
       tokens_per_beam (int): Number of candidate tokens to consider per beam.
-      pad_token (int): Token ID used for padding.
+      start_token (int): Token ID used to initiate decoding (BOS/PAD).
       max_sample_len (int): Length (L) of the Semantic IDs being decoded.
       vocab_size (int): Size of the token vocabulary.
       max_branch_factors (tuple): Maximum branching factors per level.
-      packed_csr (jnp.ndarray): Flattened trie transitions.
+      packed_csr (jnp.ndarray): Flattened trie transitions (Sparse Tail).
       csr_indptr (jnp.ndarray): CSR row pointers.
       start_mask (jnp.ndarray): 1D validity mask for the root (Level 0).
       dense_mask (jnp.ndarray): d-dimensional dense validity mask.
       dense_states (jnp.ndarray): d-dimensional dense state table.
       d_dense (int): Number of initial dense layers.
-          NOTE: In practice, we only support d=1 and d=2 (recommended). Users
-            requiring deeper specialization (d >= 3) must implement robust
-            multi-dimensional broadcasting for those specific steps.
+          NOTE: In practice, we only support d=1 and d=2 (recommended).
 
   Returns:
       jnp.ndarray: The decoded token sequences of shape (batch_size, beam_size,
       L).
   """
   # --- 1. INITIAL STEP (Codeword 1) ---
-  # Apply the root mask to restrict the first token to valid starting codewords.
-  initial_logits, key = get_probs((batch_size, 1, vocab_size), key)
+  # Create start tokens to prime the model
+  initial_input = jnp.full((batch_size, 1), start_token, dtype=jnp.int32)
+
+  # Get logits from the model
+  initial_logits, key = model(initial_input, key)
   raw_logprobs = jax.nn.log_softmax(initial_logits[:, 0, :])
 
-  # Root mask is a boolean array of shape (vocab_size,)
+  # Apply the root mask
   initial_logprobs = jnp.where(start_mask, raw_logprobs, -jnp.inf)
   top_logprobs, top_tokens = lax.top_k(initial_logprobs, beam_size)
 
   # Initialize decoding buffers.
   token_buffer = jnp.full(
-      (batch_size, beam_size, max_sample_len), pad_token, dtype=top_tokens.dtype
+      (batch_size, beam_size, max_sample_len),
+      start_token,
+      dtype=top_tokens.dtype,
   )
   token_buffer = token_buffer.at[:, :, 0].set(top_tokens)
 
-  # Map Level-0 tokens to their initial trie state IDs (Token T -> ID T+1).
+  # Map Level-0 tokens to their initial trie state IDs (Token T -> ID T+1)
   current_transition_states = top_tokens + 1
   current_token_scores = top_logprobs
 
   # --- 2. AUTOREGRESSIVE LOOP (Codewords 2 to L) ---
   for step in range(max_sample_len - 1):
-    # Generate next-token logits from the model.
-    flat_logits, key = get_probs((batch_size * beam_size, 1, vocab_size), key)
+    # Prepare input: Flatten top tokens from previous step
+    # Shape: (batch_size * beam_size, 1)
+    flat_input_ids = top_tokens.reshape(batch_size * beam_size, 1)
+
+    # Generate next-token logits from the model
+    flat_logits, key = model(flat_input_ids, key)
     flat_logprobs = jax.nn.log_softmax(flat_logits[:, 0, :])
     flat_states = current_transition_states.reshape(batch_size * beam_size)
 
-    # Apply hybrid dense/sparse masking.
+    # Apply hybrid dense/sparse masking
     if step < d_dense - 1:
       # --- DENSE SPECIALIZATION ---
+      # Reconstruct previous token from state ID (Valid for d=2)
       parent_tokens = (flat_states - 1).astype(jnp.int32)
       masks = dense_mask[parent_tokens]
 
       flat_logprobs = jnp.where(masks, flat_logprobs, -jnp.inf)
 
       topk_logprobs, topk_indices = lax.top_k(flat_logprobs, tokens_per_beam)
-      expanded_parents = jnp.repeat(
-          parent_tokens[:, None], tokens_per_beam, axis=1
-      )
-      next_state_candidates = dense_states[expanded_parents, topk_indices]
+
+      # Map winners to next trie states using dense table
+      # JAX supports advanced indexing directly
+      next_state_candidates = dense_states[parent_tokens[:, None], topk_indices]
 
       limit = tokens_per_beam
       candidates_logprobs, candidates_indices, candidates_states = (
@@ -235,7 +256,6 @@ def sparse_transition_packed_jit(
       )
     else:
       # --- SPARSE CSR LOOKUP ---
-      # Transition to CSR logic once the state space becomes too sparse for dense tables.
       limit = max_branch_factors[step + 1]
       candidates_logprobs, candidates_indices, candidates_states = (
           generate_and_apply_logprobs_mask(
@@ -249,16 +269,15 @@ def sparse_transition_packed_jit(
       )
 
     # --- SCORE & BEAM UPDATE ---
-    # Update cumulative log-probability scores.
     scores = current_token_scores[:, :, None] + candidates_logprobs.reshape(
         batch_size, beam_size, limit
     )
     flat_scores = scores.reshape((batch_size, beam_size * limit))
 
-    # Select the top beams for the next step.
+    # Select the top beams for the next step
     top_scores, flat_top_indices = lax.top_k(flat_scores, beam_size)
 
-    # Recover token IDs and state transitions for the selected beams.
+    # Recover token IDs and state transitions
     flat_candidates_indices = candidates_indices.reshape(
         batch_size, beam_size * limit
     )
@@ -273,7 +292,7 @@ def sparse_transition_packed_jit(
         flat_candidates_states, flat_top_indices, axis=1
     )
 
-    # Update history and scores using one-hot contraction.
+    # Update history and scores using one-hot contraction
     top_beam_indices = flat_top_indices // limit
     token_buffer = _gather_beams(token_buffer, top_beam_indices)
     token_buffer = token_buffer.at[:, :, step + 1].set(top_tokens)

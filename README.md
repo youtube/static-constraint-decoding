@@ -79,9 +79,17 @@ pip install -q jax[tpu] -f https://storage.googleapis.com/jax-releases/libtpu_re
 pip install -q jax[cuda11_pip] -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html # For GPU
 ```
 
+### Installation
+
+Install the package in editable mode by running the command:
+
+```
+pip install -e .
+```
+
 ### Running Tests
 
-The validity of the implementation can be verified by running the test suites. Each test script can be executed directly after installing the repository in editable mode via `pip install -e .`
+The validity of the implementation can be verified by running the test suites. Each test script can be executed directly after installing the repository.
 
 ```bash
 # Test the CSR index builder
