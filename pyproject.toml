@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "Fast, accelerator-native constrained decoding for generative retrieval."
 dependencies = [
     "torch",
+    "jax",
     "numpy",
     "scipy",
     "pandas",
