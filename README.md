@@ -1,9 +1,9 @@
 # STATIC: An Accelerator-Native Framework for Constrained Decoding
 
-This repository provides the official implementation of the **STATIC (Sparse Transition-Accelerated Trie Index)** constrained decoding framework. STATIC is a high-performance method for enforcing lexical constraints during autoregressive decoding from large language models, designed for maximum efficiency on modern hardware accelerators like GPUs and TPUs.
+This repository provides the official implementation of the **STATIC (Sparse Transition-Accelerated Trie Index for Constrained decoding)** framework. STATIC is a high-performance method for enforcing lexical constraints during autoregressive decoding from large language models, designed for maximum efficiency on modern hardware accelerators like GPUs and TPUs.
 
 This implementation includes:
-- Core algorithms for both **JAX/TPU** and **PyTorch/GPU** settings.
+- Core algorithms for both JAX/TPU and PyTorch/GPU settings.
 - Comprehensive benchmarks against standard baselines (Trie-based, Hash-based, and PPV).
 - A full suite of unit tests for correctness and validity.
 
