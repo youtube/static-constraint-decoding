@@ -38,16 +38,16 @@ This design ensures that the cost of masking is independent of the total number 
 
 ```
 .
-├── benchmarks/
-│   ├── baselines_jax.py                # JAX implementations of Trie, Hash, and PPV baselines.
-│   ├── run_comparative_benchmark_jax.py  # Script to compare STATIC against baselines.
-│   ├── run_k_benchmark_jax.py            # JAX kernel scaling benchmark (vs. branch factor K).
-│   └── run_k_benchmark_pt.py             # PyTorch kernel scaling benchmark.
-│
 ├── static_decoding/
 │   ├── csr_utils.py                    # Core STATIC index construction logic (NumPy-based).
 │   ├── decoding_jax.py                 # Core STATIC decoding loop for JAX.
 │   └── decoding_pt.py                  # Core STATIC decoding loop for PyTorch.
+│
+├── benchmarks/
+│   ├── baselines_jax.py                # JAX implementations of Trie, Hash bitmap, and PPV baselines.
+│   ├── run_comparative_benchmark_jax.py  # Script to compare STATIC against baselines.
+│   ├── run_k_benchmark_jax.py            # JAX kernel scaling benchmark (vs. branch factor K).
+│   └── run_k_benchmark_pt.py             # PyTorch kernel scaling benchmark.
 │
 ├── tests/
 │   ├── test_baselines_jax.py           # Validity tests for baseline algorithms.
