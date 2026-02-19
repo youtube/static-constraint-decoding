@@ -23,7 +23,31 @@ from static_decoding.decoding_jax import sparse_transition_jax
 def run_validity_check(
     vocab_size, num_constraints, sid_len, beam_size, d_dense, key
 ):
-  """Executes a single end-to-end validity test for a given configuration."""
+  """Executes a single end-to-end validity test for a given configuration.
+
+  This function synthesizes a random constraint graph, builds the STATIC index,
+  and executes the constrained beam search using a dummy RandomModel. It then
+  verifies that 100% of the decoded sequences are present in the original
+  constraint set.
+
+  Args:
+    vocab_size (int): The total size of the token vocabulary.
+    num_constraints (int): The number of valid Semantic IDs to generate for
+      the test set.
+    sid_len (int): The fixed length (L) of the Semantic IDs.
+    beam_size (int): The number of beams to maintain during decoding.
+    d_dense (int): The number of initial layers to handle with dense lookup
+      tables before switching to the CSR matrix.
+    key (jax.random.PRNGKey): The initial JAX PRNG key for random number
+      generation.
+
+  Returns:
+    jax.random.PRNGKey: The updated JAX PRNG key for reproducibility.
+
+  Raises:
+    AssertionError: If any decoded sequence is not found in the original
+      set of valid Semantic IDs.
+  """
   print(
       f"  [Trial] V={vocab_size}, N={num_constraints}, L={sid_len},"
       f" beam={beam_size}, d={d_dense}"

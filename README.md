@@ -11,14 +11,14 @@ This implementation includes:
 
 - **Accelerator-Native Design**: The core masking kernel is implemented as a single, vectorized operation, avoiding expensive CPU-accelerator synchronization and pointer-chasing common in traditional trie-based methods.
 - **Hybrid Data Structure**: STATIC uses a novel hybrid index. It represents the "hot" initial layers of a prefix tree with a dense lookup table for O(1) access and the high-cardinality "sparse tail" with a Compressed Sparse Row (CSR) matrix for memory efficiency.
-- **High Performance**: Achieves near-constant-time ($O(1)$) performance with respect to the total number of constraints, and logarithmic performance ($O(\log K)$) relative to the branching factor (K), significantly outperforming traditional baselines.
+- **High Performance**: Achieves near-constant-time (O(1)) performance with respect to the total number of constraints, and logarithmic performance (O(log K)) relative to the branching factor (K), significantly outperforming traditional baselines.
 - **Framework Agnostic**: Includes end-to-end, tested implementations for both major deep learning frameworks: JAX and PyTorch.
 
 ## How It Works
 
 The core of STATIC is a two-part process: an offline indexing step and an online masking step.
 
-1.  **Offline Indexing (`build_sparse_matrix_fast`)**:
+1.  **Offline Indexing (`build_static_index`)**:
     - Takes a large set of valid token sequences (e.g., millions of Semantic IDs) as input.
     - Analyzes the prefix structure and converts the implicit trie into the hybrid dense/sparse representation.
     - It synthesizes several components:
@@ -26,7 +26,7 @@ The core of STATIC is a two-part process: an offline indexing step and an online
         - A `dense_mask` and `dense_states` tensor to handle the first `d` tokens.
         - A `packed_csr` and `csr_indptr` matrix to represent all transitions beyond depth `d`.
 
-2.  **Online Masking (`sparse_transition_packed_jit`/`_torch`)**:
+2.  **Online Masking (`sparse_transition_jax`/`_torch`)**:
     - During each step of autoregressive decoding (e.g., beam search), the model's predicted log-probabilities are masked.
     - For the first `d` steps, valid next tokens are retrieved in O(1) from the dense tables.
     - For all subsequent steps, the `generate_and_apply_logprobs_mask` kernel performs a vectorized burst-read from the CSR matrix to fetch all valid continuations for all beams in parallel.
@@ -44,7 +44,8 @@ This design ensures that the cost of masking is independent of the total number 
 │   ├── run_k_benchmark_jax.py            # JAX kernel scaling benchmark (vs. branch factor K).
 │   └── run_k_benchmark_pt.py             # PyTorch kernel scaling benchmark.
 │
-├── static/
+├── static_decoding/
+│   ├── csr_utils.py                    # Core STATIC index construction logic (NumPy-based).
 │   ├── decoding_jax.py                 # Core STATIC decoding loop for JAX.
 │   └── decoding_pt.py                  # Core STATIC decoding loop for PyTorch.
 │
@@ -54,8 +55,6 @@ This design ensures that the cost of masking is independent of the total number 
 │   ├── test_jax_decoding.py            # End-to-end validity tests for the JAX decoder.
 │   └── test_pt_decoding.py             # End-to-end validity tests for the PyTorch decoder.
 │
-├── csr_utils.py                        # Core STATIC index construction logic (NumPy-based).
-├── example.ipynb                       # A simple notebook to demonstrate usage.
 └── README.md                           # This file.
 ```
 
@@ -87,6 +86,16 @@ Install the package in editable mode by running the command:
 pip install -e .
 ```
 
+### Usage Example
+
+The repository includes `example.ipynb`, a notebook that provides a simple, hands-on demonstration of the STATIC framework using the JAX implementation. The notebook walks through the core steps:
+
+1.  Synthesizing Data: Generating a set of random, valid Semantic IDs (SIDs) to define the constraint vocabulary.
+2.  Building the Index: Using `build_static_index` to convert the SIDs into the hybrid dense/sparse STATIC representation.
+3.  Running Decoding: Executing a constrained beam search with `sparse_transition_jax` and a mock `RandomModel` to generate valid sequences on an accelerator.
+
+To run the example, start a Jupyter Notebook server and open `example.ipynb`.
+
 ### Running Tests
 
 The validity of the implementation can be verified by running the test suites. Each test script can be executed directly after installing the repository.
@@ -102,7 +111,7 @@ python tests/test_jax_decoding.py
 python tests/test_pt_decoding.py
 
 # Test the JAX baseline implementations
-python tests/test_baselines_jax.py
+python -m tests.test_baselines_jax
 ```
 
 ### Running Benchmarks
@@ -111,7 +120,7 @@ The repository includes scripts to reproduce the performance benchmarks.
 
 ```bash
 # Run the comparative benchmark (STATIC vs. baselines)
-python benchmarks/run_comparative_benchmark_jax.py
+python -m benchmarks.run_comparative_benchmark_jax
 
 # Run the kernel-level scaling analysis for JAX
 python benchmarks/run_k_benchmark_jax.py

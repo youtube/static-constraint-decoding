@@ -14,7 +14,6 @@
 
 import gc
 import time
-from csr_utils import build_sparse_matrix_fast
 import jax
 from jax import jit
 import jax.numpy as jnp
@@ -22,7 +21,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from scipy import stats
-from static.decoding_jax import generate_and_apply_logprobs_mask
+from static_decoding.csr_utils import build_static_index
+from static_decoding.decoding_jax import generate_and_apply_logprobs_mask
 
 
 def run_real_csr_benchmark_oss(
@@ -52,7 +52,7 @@ def run_real_csr_benchmark_oss(
   sids_np = sids_np[np.lexsort(keys_np)]
 
   # Build STATIC Index
-  packed_csr_np, indptr_np, lmb, _, _, _ = build_sparse_matrix_fast(
+  packed_csr_np, indptr_np, lmb, _, _, _ = build_static_index(
       sids_np, vocab_size
   )
   print(f"    Graph Built. Actual Max Branch Factor: {max(lmb)}")

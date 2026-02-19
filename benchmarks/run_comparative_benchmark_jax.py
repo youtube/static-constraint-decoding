@@ -5,16 +5,17 @@ import gc
 import time
 from benchmarks.baselines_jax import build_hash_bitmap
 from benchmarks.baselines_jax import build_trie
-from benchmarks.baselines_jax import generic_beam_search_jit
+from benchmarks.baselines_jax import generic_beam_search_jax
 from benchmarks.baselines_jax import make_hash_bitmap_fn
 from benchmarks.baselines_jax import make_ppv_mask_fn
 from benchmarks.baselines_jax import make_trie_mask_fn
-from csr_utils import build_sparse_matrix_fast
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pandas as pd
-from static.decoding_jax import sparse_transition_packed_jit
+from static_decoding.csr_utils import build_static_index
+from static_decoding.decoding_jax import RandomModel
+from static_decoding.decoding_jax import sparse_transition_jax
 
 # =============================================================================
 # 0. EXPERIMENT CONFIGURATION (Paper Appendix Table 4)
@@ -68,14 +69,17 @@ def run_benchmarks():
     else:
       print("  Using Cached Data...")
 
+    # Instantiate Model (Shared for both STATIC and Baselines)
+    model = RandomModel(v)
     latencies = []
 
     try:
       # --- 2. EXECUTION: STATIC METHOD (Accelerator-Native) ---
       if method == "STATIC":
         if "static" not in cache["structs"]:
-          p_csr, indptr, lmb, s_m, d_m, d_s = build_sparse_matrix_fast(
-              cache["sids_np"], v
+          # Build STATIC Index (d=2 dense specialization)
+          p_csr, indptr, lmb, s_m, d_m, d_s = build_static_index(
+              cache["sids_np"], v, d=2
           )
           cache["structs"]["static"] = (
               jnp.array(p_csr),
@@ -91,12 +95,13 @@ def run_benchmarks():
         ]["static"]
 
         # JIT Warmup
-        _ = sparse_transition_packed_jit(
+        _ = sparse_transition_jax(
+            model,
             jax.random.key(0),
             BS,
             BM,
             TPB,
-            0,
+            0,  # start_token
             SID_LEN,
             v,
             lmb,
@@ -105,16 +110,18 @@ def run_benchmarks():
             start_mask,
             dense_mask,
             dense_states,
+            d_dense=2,
         ).block_until_ready()
 
         for t in range(TRIALS):
           st = time.perf_counter()
-          _ = sparse_transition_packed_jit(
+          _ = sparse_transition_jax(
+              model,
               jax.random.key(t),
               BS,
               BM,
               TPB,
-              0,
+              0,  # start_token
               SID_LEN,
               v,
               lmb,
@@ -123,41 +130,51 @@ def run_benchmarks():
               start_mask,
               dense_mask,
               dense_states,
+              d_dense=2,
           ).block_until_ready()
           latencies.append((time.perf_counter() - st) * 1000)
 
       # --- 3. EXECUTION: BASELINE METHODS (Harness-based) ---
       else:
-        mask_fn, mask_data = None, None
+        mask_fn = None
 
         if method == "Trie":
           if "trie" not in cache["structs"]:
             cache["structs"]["trie"] = build_trie(cache["sids_np"])
-          mask_fn = make_trie_mask_fn(
-              cache["structs"]["trie"], BS, BM, v, SID_LEN
-          )
-          mask_data = jnp.array(0)
+          mask_fn = make_trie_mask_fn(cache["structs"]["trie"], v)
 
         elif method == "Hash":
           if "hash" not in cache["structs"]:
             cache["structs"]["hash"] = build_hash_bitmap(cache["sids_np"])
-          mask_fn = make_hash_bitmap_fn()
-          mask_data = cache["structs"]["hash"]
+          mask_fn = make_hash_bitmap_fn(cache["structs"]["hash"])
 
         elif method in {"PPV-Approx", "PPV-Exact"}:
           k_val = 50 if method == "PPV-Approx" else v
-          mask_fn = make_ppv_mask_fn(k_val)
-          mask_data = jnp.array(cache["sids_np"])
+          mask_fn = make_ppv_mask_fn(jnp.array(cache["sids_np"]), k_val)
 
         # Warmup
-        _ = generic_beam_search_jit(
-            jax.random.key(0), mask_fn, mask_data, BS, BM, TPB, SID_LEN, v
+        _ = generic_beam_search_jax(
+            model,
+            jax.random.key(0),
+            mask_fn,
+            BS,
+            BM,
+            TPB,
+            SID_LEN,
+            start_token=0,
         ).block_until_ready()
 
         for t in range(TRIALS):
           st = time.perf_counter()
-          _ = generic_beam_search_jit(
-              jax.random.key(t), mask_fn, mask_data, BS, BM, TPB, SID_LEN, v
+          _ = generic_beam_search_jax(
+              model,
+              jax.random.key(t),
+              mask_fn,
+              BS,
+              BM,
+              TPB,
+              SID_LEN,
+              start_token=0,
           ).block_until_ready()
           latencies.append((time.perf_counter() - st) * 1000)
 

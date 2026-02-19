@@ -13,12 +13,12 @@
 # limitations under the License.
 
 import gc
-from csr_utils import build_sparse_matrix_fast
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from scipy import stats
-from static.decoding_pt import generate_and_apply_logprobs_mask
+from static_decoding.csr_utils import build_static_index
+from static_decoding.decoding_pt import generate_and_apply_logprobs_mask
 import torch
 from torch.profiler import profile
 from torch.profiler import ProfilerActivity
@@ -65,7 +65,7 @@ def run_real_csr_benchmark_pytorch(
   keys_np = [sids_np[:, i] for i in range(l_sid - 1, -1, -1)]
   sids_np = sids_np[np.lexsort(keys_np)]
 
-  packed_csr_np, indptr_np, lmb, _, _, _ = build_sparse_matrix_fast(
+  packed_csr_np, indptr_np, lmb, _, _, _ = build_static_index(
       sids_np, vocab_size
   )
   print(f"    Graph Built. Actual Max Branch Factor: {max(lmb)}")

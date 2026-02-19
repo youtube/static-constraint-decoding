@@ -54,28 +54,6 @@ def _gather_beams(x, beam_indices):
   return jnp.einsum("beo,bo...->be...", oh_beam_indices, x).astype(x.dtype)
 
 
-def get_probs(shape, key):
-  """Generates mock logits for testing and benchmarking.
-
-  NOTE: This function generates probabilities randomly using a uniform
-  distribution rather than using a real trained model. It is intended
-  strictly for performance profiling and unit testing.
-
-  Args:
-      shape (tuple): The desired output shape, e.g., (batch_size, 1,
-        vocab_size).
-      key (jax.random.PRNGKey): JAX PRNG key for random number generation.
-
-  Returns:
-      tuple: A tuple containing:
-          - logits (jnp.ndarray): The randomly generated logits.
-          - next_key (jax.random.PRNGKey): The next PRNG key for
-          reproducibility.
-  """
-  key, subkey = jax.random.split(key)
-  return jax.random.uniform(subkey, shape, minval=0, maxval=1), key
-
-
 # =============================================================================
 # 2. GENERIC BEAM SEARCH HARNESS
 # =============================================================================
@@ -84,24 +62,24 @@ def get_probs(shape, key):
 @functools.partial(
     jit,
     static_argnames=(
+        "model",
         "mask_fn",
         "batch_size",
         "beam_size",
         "tokens_per_beam",
         "max_sample_len",
-        "vocab_size",
+        "start_token",
     ),
 )
-def generic_beam_search_jit(
+def generic_beam_search_jax(
+    model,
     key,
     mask_fn,
-    mask_data,
     batch_size,
     beam_size,
     tokens_per_beam,
     max_sample_len,
-    vocab_size,
-    pad_token=0,
+    start_token=0,
 ):
   """A framework-agnostic harness for constrained beam search benchmarks.
 
@@ -111,43 +89,52 @@ def generic_beam_search_jit(
   algorithms (Trie, PPV, Hash) using identical selection and history management.
 
   Args:
+      model (Callable): A callable (or object) that takes (input_ids, key) and
+        returns (logits, new_key).
       key (jax.random.PRNGKey): PRNG key for mock logit generation.
       mask_fn (Callable): The baseline masking function to evaluate.
-      mask_data (Any): The auxiliary data structure (Trie, Array, Bitmap)
-        required by the mask_fn.
       batch_size (int): Number of parallel sequences.
       beam_size (int): Number of beams to maintain per sequence.
       tokens_per_beam (int): Number of candidate tokens to consider per beam.
       max_sample_len (int): The total decoding length (L).
-      vocab_size (int): The size of the token vocabulary (V).
-      pad_token (int): Token ID used for padding.
+      start_token (int): Token ID used to initiate decoding (BOS/PAD).
 
   Returns:
       jnp.ndarray: The decoded sequences of shape (batch_size, beam_size, L).
   """
   # --- 1. INITIAL STEP (Root) ---
-  initial_logits, key = get_probs((batch_size, 1, vocab_size), key)
+  # Create start tokens to prime the model
+  initial_input = jnp.full((batch_size, 1), start_token, dtype=jnp.int32)
+
+  # Get logits from the model
+  initial_logits, key = model(initial_input, key)
   initial_logprobs = jax.nn.log_softmax(initial_logits[:, 0, :])
 
   # Apply mask to the first token (step 0).
   # We use a dummy buffer for the prefix since the history is empty at start.
   dummy_buffer = jnp.zeros((batch_size, max_sample_len), dtype=jnp.int32)
-  initial_logprobs = mask_fn(initial_logprobs, dummy_buffer, 0, mask_data)
+  initial_logprobs = mask_fn(initial_logprobs, dummy_buffer, 0)
 
   # Select initial beams
   top_logprobs, top_tokens = lax.top_k(initial_logprobs, beam_size)
 
   # Initialize decoding buffers
   token_buffer = jnp.full(
-      (batch_size, beam_size, max_sample_len), pad_token, dtype=top_tokens.dtype
+      (batch_size, beam_size, max_sample_len),
+      start_token,
+      dtype=top_tokens.dtype,
   )
   token_buffer = token_buffer.at[:, :, 0].set(top_tokens)
   cur_scores = top_logprobs
 
   # --- 2. AUTOREGRESSIVE LOOP (Steps 1 to L-1) ---
   for step in range(max_sample_len - 1):
-    # Generate new logits from the model
-    flat_logits, key = get_probs((batch_size * beam_size, 1, vocab_size), key)
+    # Prepare input: Flatten top tokens from previous step
+    # Shape: (batch_size * beam_size, 1)
+    flat_input_ids = top_tokens.reshape(batch_size * beam_size, 1)
+
+    # Generate next-token logits from the model
+    flat_logits, key = model(flat_input_ids, key)
     flat_logprobs = jax.nn.log_softmax(flat_logits[:, 0, :])
 
     # Apply the baseline constraint mask using the actual beam history
@@ -156,7 +143,6 @@ def generic_beam_search_jit(
         flat_logprobs,
         token_buffer.reshape(-1, max_sample_len),
         step + 1,
-        mask_data,
     )
 
     # Calculate cumulative scores and select top candidates
@@ -202,7 +188,7 @@ def build_trie(sids):
   return trie
 
 
-def make_trie_mask_fn(trie_root, batch_size, beam_size, vocab_size, sid_len):
+def make_trie_mask_fn(trie_root, vocab_size):
   """Creates a masking function that calls back to a CPU-based Trie.
 
   This baseline simulates the "pointer-chasing" behavior common in many
@@ -238,7 +224,7 @@ def make_trie_mask_fn(trie_root, batch_size, beam_size, vocab_size, sid_len):
           masks[i, valid_tokens] = True
     return masks
 
-  def mask_fn(logprobs, token_buffer, step, mask_data):
+  def mask_fn(logprobs, token_buffer, step):
     """JAX-compatible wrapper for the trie callback."""
     # Determine dynamic batch dimension (handles step 0 vs step > 0)
     n = logprobs.shape[0]
@@ -280,7 +266,7 @@ def build_hash_bitmap(sids):
   return jnp.array(bitmap)
 
 
-def make_hash_bitmap_fn():
+def make_hash_bitmap_fn(bitmap):
   """Creates a hash-based masking function optimized for JAX.
 
   This baseline is accelerator-native but suffers from potential false
@@ -291,8 +277,8 @@ def make_hash_bitmap_fn():
   MULTIPLIER = 0x9E371
 
   @jit
-  def mask_fn(logprobs, token_buffer, step, mask_data):
-    batch_beam, vocab_size = logprobs.shape
+  def mask_fn(logprobs, token_buffer, step):
+    _, vocab_size = logprobs.shape
 
     def hash_prefix(seq):
       """Calculates the prefix hash for a single sequence."""
@@ -313,7 +299,7 @@ def make_hash_bitmap_fn():
     # Probe the bitmap for each candidate
     byte_idx = next_hashes // 8
     bit_idx = next_hashes % 8
-    is_set = (mask_data[byte_idx] & (1 << bit_idx)) != 0
+    is_set = (bitmap[byte_idx] & (1 << bit_idx)) != 0
 
     return jnp.where(is_set, logprobs, -1e9)
 
@@ -405,10 +391,10 @@ def ppv_batch_logic(flat_logprobs, history, step, sorted_sids, M):
   return result_mask.at[jnp.arange(batch_size)[:, None], vt].max(final_valid)
 
 
-def make_ppv_mask_fn(top_k):
+def make_ppv_mask_fn(sorted_sids, top_k):
   """Creates a PPV-based masking function."""
 
-  def mask_fn(flat_logprobs, token_buffer, step, mask_data):
+  def mask_fn(flat_logprobs, token_buffer, step):
     batch_size = flat_logprobs.shape[0]
     max_len = token_buffer.shape[1]
 
@@ -417,7 +403,7 @@ def make_ppv_mask_fn(top_k):
         flat_logprobs,
         token_buffer.reshape(batch_size, max_len),
         step,
-        mask_data,
+        sorted_sids,
         top_k,
     )
     return jnp.where(masks, flat_logprobs, -1e9)
