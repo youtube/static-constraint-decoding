@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install PyTorch (CPU)
+        run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install JAX (CPU)
+        run: pip install "jax[cpu]"
+
+      - name: Install package
+        run: pip install -e .
+
+      - name: Run CSR builder tests
+        run: python -m tests.test_csr_builder
+
+      - name: Run PyTorch decoding tests
+        run: python -m tests.test_pt_decoding
+
+      - name: Run JAX decoding tests
+        run: python -m tests.test_jax_decoding
+
+      - name: Run JAX baseline tests
+        run: python -m tests.test_baselines_jax

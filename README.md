@@ -16,6 +16,10 @@ This implementation includes:
 
 ## How It Works
 
+Below is the diagram of the full STATIC pipeline:
+
+![diagram](assets/static_overview_figure.png)
+
 The core of STATIC is a two-part process: an offline indexing step and an online masking step.
 
 1.  **Offline Indexing (`build_static_index`)**:
