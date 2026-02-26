@@ -27,12 +27,12 @@ The core of STATIC is a two-part process: an offline indexing step and an online
     - Analyzes the prefix structure and converts the implicit trie into the hybrid dense/sparse representation.
     - It synthesizes several components:
         - A `start_mask` to validate the very first token.
-        - A `dense_mask` and `dense_states` tensor to handle the first `d` tokens.
-        - A `packed_csr` and `csr_indptr` matrix to represent all transitions beyond depth `d`.
+        - `dense_mask` and `dense_states` tensors to handle the first `dense_lookup_layers` tokens.
+        - A `packed_csr` and `csr_indptr` sparse matrix representation to represent all transitions beyond depth `dense_lookup_layers`.
 
 2.  **Online Masking (`sparse_transition_jax`/`_torch`)**:
     - During each step of autoregressive decoding (e.g., beam search), the model's predicted log-probabilities are masked.
-    - For the first `d` steps, valid next tokens are retrieved in O(1) from the dense tables.
+    - For the first `dense_lookup_layers` steps, valid next tokens are retrieved in O(1) from the dense tables.
     - For all subsequent steps, the `generate_and_apply_logprobs_mask` kernel performs a vectorized burst-read from the CSR matrix to fetch all valid continuations for all beams in parallel.
     - This provides the final mask, which is applied to the log-probabilities before selecting the next tokens.
 
@@ -50,8 +50,8 @@ This design ensures that the cost of masking is independent of the total number 
 ├── benchmarks/
 │   ├── baselines_jax.py                # JAX implementations of Trie, Hash bitmap, and PPV baselines.
 │   ├── run_comparative_benchmark_jax.py  # Script to compare STATIC against baselines.
-│   ├── run_k_benchmark_jax.py            # JAX kernel scaling benchmark (vs. branch factor K).
-│   └── run_k_benchmark_pt.py             # PyTorch kernel scaling benchmark.
+│   ├── run_branch_benchmark_jax.py       # JAX kernel scaling benchmark (vs. branch factor).
+│   └── run_branch_benchmark_pt.py        # PyTorch kernel scaling benchmark.
 │
 ├── tests/
 │   ├── test_baselines_jax.py           # Validity tests for baseline algorithms.
@@ -127,10 +127,10 @@ The repository includes scripts to reproduce the performance benchmarks.
 python -m benchmarks.run_comparative_benchmark_jax
 
 # Run the kernel-level scaling analysis for JAX
-python benchmarks/run_k_benchmark_jax.py
+python benchmarks/run_branch_benchmark_jax.py
 
 # Run the kernel-level scaling analysis for PyTorch
-python benchmarks/run_k_benchmark_pt.py
+python benchmarks/run_branch_benchmark_pt.py
 ```
 The benchmark scripts will print results directly to the console in a formatted table.
 
