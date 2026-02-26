@@ -92,8 +92,8 @@ def test_csr_configuration(sids, vocab_size, L, d_val):
     AssertionError: If any structural invariant or path verification fails.
   """
   print(f"  [Trial] Testing d={d_val}...")
-  p_csr, indptr, lmb, s_mask, d_mask, d_states = build_static_index(
-      sids, vocab_size, d=d_val
+  p_csr, indptr, layer_max_branches, s_mask, d_mask, d_states = (
+      build_static_index(sids, vocab_size, dense_lookup_layers=d_val)
   )
 
   # A. Shape Verification
@@ -118,13 +118,16 @@ def test_csr_configuration(sids, vocab_size, L, d_val):
 
   # D. Metadata Verification
   # layer_max_branches must match SID length L for static shape compilation
-  assert (
-      len(lmb) == L
-  ), f"layer_max_branches length {len(lmb)} does not match SID length {L}"
+  assert len(layer_max_branches) == L, (
+      f"layer_max_branches length {len(layer_max_branches)} does not match "
+      f"SID length {L}"
+  )
 
   # Correctness of branch indexing
-  # lmb[0] is the root (number of valid starting tokens)
-  assert lmb[0] == len(valid_starts), "Root branching factor mismatch"
+  # layer_max_branches[0] is the root (number of valid starting tokens)
+  assert layer_max_branches[0] == len(valid_starts), (
+      "Root branching factor mismatch"
+  )
 
 
 def run_comprehensive_builder_test():

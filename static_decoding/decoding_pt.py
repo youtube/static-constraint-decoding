@@ -12,27 +12,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 
-def _gather_beams(x, beam_indices):
+def _gather_beams(x: torch.Tensor, beam_indices: torch.Tensor) -> torch.Tensor:
   """Efficiently gathers beam data across a batch during the selection step.
 
-  This utility uses one-hot contraction (via torch.gather) to select the top-M
-  sequences from the candidate pool while preserving batch and history
-  dimensions.
+  Uses torch.gather to select the top-M sequences from the candidate pool
+  while preserving batch and history dimensions.
 
   Args:
-      x (torch.Tensor): The source tensor to gather from, usually of shape
-        (batch_size, old_beam_size, ...).
-      beam_indices (torch.Tensor): The indices of the beams to select, of shape
-        (batch_size, new_beam_size).
+      x: The source tensor to gather from.
+          Shape: (batch_size, old_beam_size, ...).
+      beam_indices: The indices of the beams to select.
+          Shape: (batch_size, new_beam_size).
 
   Returns:
-      torch.Tensor: The gathered tensor of shape (batch_size, new_beam_size,
-      ...).
+      The gathered tensor.
+          Shape: (batch_size, new_beam_size, ...).
   """
   batch_size, new_beam_size = beam_indices.shape
   view_shape = [batch_size, new_beam_size] + [1] * (x.dim() - 2)
@@ -43,14 +44,14 @@ def _gather_beams(x, beam_indices):
 
 @torch.inference_mode()
 def generate_and_apply_logprobs_mask(
-    flat_logprobs,
-    flat_states,
-    packed_csr,
-    csr_indptr,
-    limit,
-    vocab_size,
-    device,
-):
+    flat_logprobs: torch.Tensor,
+    flat_states: torch.Tensor,
+    packed_csr: torch.Tensor,
+    csr_indptr: torch.Tensor,
+    limit: int,
+    vocab_size: int,
+    device: torch.device,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
   """Performs vectorized sparse candidate extraction from the STATIC CSR matrix.
 
   This kernel replaces irregular "pointer-chasing" trie traversals with a single
@@ -59,24 +60,26 @@ def generate_and_apply_logprobs_mask(
   latency relative to the total constraint set size.
 
   Args:
-      flat_logprobs (torch.Tensor): Model-predicted log-probabilities of shape
-        (batch_size * beam_size, vocab_size).
-      flat_states (torch.Tensor): Current trie state IDs for each beam.
-      packed_csr (torch.Tensor): The flat transition table [Token ID, Next State
-        ID].
-      csr_indptr (torch.Tensor): The CSR row pointer array identifying segments.
-      limit (int): The maximum branching factor (K) for the current trie depth.
-      vocab_size (int): The total token vocabulary size.
-      device (torch.device): The accelerator device (CUDA/TPU).
+      flat_logprobs: Model-predicted log-probabilities.
+          Shape: (batch_size * beam_size, vocab_size).
+      flat_states: Current trie state IDs for each beam.
+          Shape: (batch_size * beam_size,).
+      packed_csr: The flat transition table [Token ID, Next State ID].
+          Shape: (num_transitions + V, 2).
+      csr_indptr: The CSR row pointer array identifying segments.
+          Shape: (num_states + 2,).
+      limit: The maximum branching factor (K) for the current trie depth.
+      vocab_size: The total token vocabulary size (V).
+      device: The accelerator device (CUDA/TPU).
 
   Returns:
-      tuple: A tuple containing:
-          - candidate_logprobs (Tensor): Log-probs for valid children, shape
-          (B*M, K).
-          - dense_indices (Tensor): Token IDs for valid children, shape (B*M,
-          K).
-          - dense_data (Tensor): Next state IDs for valid children, shape (B*M,
-          K).
+      A tuple containing:
+          - candidate_logprobs: Log-probs for valid children.
+              Shape: (batch_size * beam_size, K).
+          - candidate_token_ids: Token IDs for valid children.
+              Shape: (batch_size * beam_size, K).
+          - candidate_next_states: Next state IDs for valid children.
+              Shape: (batch_size * beam_size, K).
   """
   # 1. Fetch Sparse Rows (Burst Read)
   # We perform a coalesced read from the CSR by indexing into the row pointers.
@@ -93,8 +96,8 @@ def generate_and_apply_logprobs_mask(
 
   # Retrieve [Token, NextState] pairs directly from High-Bandwidth Memory (HBM).
   gathered_vals = packed_csr[safe_gather_indices]
-  dense_indices = gathered_vals[..., 0]
-  dense_data = gathered_vals[..., 1]
+  candidate_token_ids = gathered_vals[..., 0]
+  candidate_next_states = gathered_vals[..., 1]
 
   # 2. Validity Masking
   # Mask out 'padding' slots if a trie node has fewer than 'limit' children.
@@ -102,15 +105,15 @@ def generate_and_apply_logprobs_mask(
 
   # 3. Logprob Gathering
   # Gather only the specific log-probabilities corresponding to valid tokens.
-  safe_dense_indices = dense_indices.long().clamp(max=vocab_size - 1)
-  candidate_logprobs = flat_logprobs.gather(1, safe_dense_indices)
+  safe_token_ids = candidate_token_ids.long().clamp(max=vocab_size - 1)
+  candidate_logprobs = flat_logprobs.gather(1, safe_token_ids)
 
   # Apply -inf mask to invalidate non-existent paths in the prefix tree.
   candidate_logprobs = torch.where(
       valid_mask, candidate_logprobs, torch.tensor(-float('inf'), device=device)
   )
 
-  return candidate_logprobs, dense_indices, dense_data
+  return candidate_logprobs, candidate_token_ids, candidate_next_states
 
 
 class RandomModel(nn.Module):
@@ -120,75 +123,78 @@ class RandomModel(nn.Module):
   computational overhead of a real neural network.
   """
 
-  def __init__(self, vocab_size, device):
+  def __init__(self, vocab_size: int, device: torch.device):
     super().__init__()
     self.vocab_size = vocab_size
     self.device = device
     self.to(device)
 
-  def forward(self, input_ids):
-    """Args:
+  def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
+    """Generates random logits for the next token prediction.
 
-        input_ids (torch.Tensor): Shape (batch_size, seq_len)
+    Args:
+        input_ids: Shape (batch_size, seq_len).
 
     Returns:
-        torch.Tensor: Random logits of shape (batch_size, 1, vocab_size)
-                      representing the prediction for the NEXT token.
+        Random logits. Shape: (batch_size, 1, vocab_size).
     """
     batch_size = input_ids.size(0)
-    # We only output the logits for the final step (next token prediction)
     return torch.rand(batch_size, 1, self.vocab_size, device=self.device)
 
 
 @torch.inference_mode()
 def sparse_transition_torch(
-    model,
-    batch_size,
-    beam_size,
-    tokens_per_beam,
-    start_token,
-    max_sample_len,
-    vocab_size,
-    max_branch_factors,
-    packed_csr,
-    csr_indptr,
-    start_mask,
-    dense_mask,
-    dense_states,
-    device,
-    d_dense=2,
-):
+    model: nn.Module,
+    batch_size: int,
+    beam_size: int,
+    tokens_per_beam: int,
+    start_token: int,
+    max_sample_len: int,
+    vocab_size: int,
+    max_branch_factors: tuple[int, ...],
+    packed_csr: torch.Tensor,
+    csr_indptr: torch.Tensor,
+    start_mask: torch.Tensor,
+    dense_mask: torch.Tensor,
+    dense_states: torch.Tensor,
+    device: torch.device,
+    d_dense: int = 2,
+) -> torch.Tensor:
   """Main harness for STATIC constrained beam search using a PyTorch model.
 
-  This function executes the full autoregressive decoding loop. It generates
-  logits
-  from the provided `model` and applies the STATIC hybrid masking strategy
-  (Dense + CSR)
-  to strictly enforce the constraint graph.
+  Executes the full autoregressive decoding loop. Generates logits from the
+  provided `model` and applies the STATIC hybrid masking strategy
+  (Dense + CSR) to strictly enforce the constraint graph.
 
   Args:
-      model (nn.Module): A PyTorch model (real or dummy) that accepts
-        'input_ids' of shape (B, 1) and returns logits of shape (B, 1, V).
-      batch_size (int): Number of sequences to decode in parallel.
-      beam_size (int): Number of beams to maintain per sequence.
-      tokens_per_beam (int): Number of candidate tokens to consider per beam.
-      start_token (int): The token ID used to initiate decoding (e.g., BOS or
-        PAD). This depends on the model's specific training convention.
-      max_sample_len (int): Length (L) of the Semantic IDs being decoded.
-      vocab_size (int): Size of the token vocabulary.
-      max_branch_factors (tuple): Maximum branching factors per level.
-      packed_csr (torch.Tensor): Flattened trie transitions (Sparse Tail).
-      csr_indptr (torch.Tensor): CSR row pointers.
-      start_mask (torch.Tensor): 1D validity mask for the root (Level 0).
-      dense_mask (torch.Tensor): d-dimensional dense validity mask (Hot Head).
-      dense_states (torch.Tensor): d-dimensional dense state table.
-      device (torch.device): Device to execute on.
-      d_dense (int): Number of initial dense layers.
-          NOTE: In practice, we only support d=1 and d=2 (recommended).
+      model: A PyTorch model that accepts input_ids of shape (B*M, 1) and
+          returns logits of shape (B*M, 1, V).
+      batch_size: Number of sequences to decode in parallel (B).
+      beam_size: Number of beams to maintain per sequence (M).
+      tokens_per_beam: Number of candidate tokens to consider per beam.
+      start_token: The token ID used to initiate decoding (e.g., BOS or PAD).
+      max_sample_len: Length (L) of the Semantic IDs being decoded.
+      vocab_size: Size of the token vocabulary (V).
+      max_branch_factors: Maximum branching factors per level.
+          Length: L.
+      packed_csr: Flattened trie transitions (Sparse Tail).
+          Shape: (num_transitions + V, 2).
+      csr_indptr: CSR row pointers.
+          Shape: (num_states + 2,).
+      start_mask: 1D validity mask for the root (Level 0).
+          Shape: (V,).
+      dense_mask: d_dense-dimensional dense validity mask (Hot Head).
+          Shape: (V,) * d_dense.
+      dense_states: d_dense-dimensional dense state table.
+          Shape: (V,) * d_dense.
+      device: Device to execute on.
+      d_dense: Number of initial dense layers.
+          NOTE: In practice, we only support d_dense=1 and d_dense=2
+          (recommended).
 
   Returns:
-      torch.Tensor: The decoded token sequences of shape (batch_size, beam_size,
-      L).
+      The decoded token sequences.
+          Shape: (batch_size, beam_size, max_sample_len).
   """
   # --- 1. INITIAL STEP (Codeword 1) ---
   # Use the specific start_token expected by the model (BOS/PAD)
@@ -232,7 +238,7 @@ def sparse_transition_torch(
     # Apply hybrid dense/sparse masking
     if step < d_dense - 1:
       # --- DENSE SPECIALIZATION ---
-      # Reconstruct previous token from state ID (Valid for d=2)
+      # Reconstruct previous token from state ID (Valid for d_dense=2)
       parent_tokens = (flat_states - 1).long()
       masks = dense_mask[parent_tokens]
 
@@ -245,7 +251,6 @@ def sparse_transition_torch(
       )
 
       # Map winners to next trie states using dense table
-      # unsqueeze(1) required for correct broadcasting
       next_state_candidates = dense_states[
           parent_tokens.unsqueeze(1), topk_indices.long()
       ]

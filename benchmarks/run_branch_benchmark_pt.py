@@ -59,7 +59,7 @@ def run_real_csr_benchmark_gpu(num_sequences=1_000_000, batch_beam=2, l_sid=8):
 
     # Build STATIC Index (We only need the CSR components for the masking kernel)
     packed_csr_np, indptr_np, _, _, _, _ = build_static_index(
-        sids_np, vocab_size, d=1
+        sids_np, vocab_size, dense_lookup_layers=1
     )
 
     # Move Index to Device

@@ -12,32 +12,31 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
+from collections.abc import Callable
 import functools
 import jax
 from jax import lax
 import jax.numpy as jnp
 
 
-def _gather_beams(x, beam_indices):
+def _gather_beams(x: jnp.ndarray, beam_indices: jnp.ndarray) -> jnp.ndarray:
   """Efficiently gathers beam data across a batch during the selection step.
 
-  This utility uses one-hot contraction for TPU efficiency to select the top-M
-  sequences from the candidate pool while preserving batch and history
-  dimensions.
-  It is designed to be highly efficient on hardware accelerators by avoiding
-  explicit Python loops.
+  Uses one-hot contraction for TPU efficiency to select the top-M sequences
+  from the candidate pool while preserving batch and history dimensions.
 
   Args:
-      x (jnp.ndarray): The source tensor to gather from, usually of shape
-        (batch_size, old_beam_size, ...).
-      beam_indices (jnp.ndarray): The indices of the beams to select, of shape
-        (batch_size, new_beam_size).
+      x: The source tensor to gather from.
+          Shape: (batch_size, old_beam_size, ...).
+      beam_indices: The indices of the beams to select.
+          Shape: (batch_size, new_beam_size).
 
   Returns:
-      jnp.ndarray: The gathered tensor of shape (batch_size, new_beam_size,
-      ...).
+      The gathered tensor.
+          Shape: (batch_size, new_beam_size, ...).
   """
-  # Extract dimensions from tensor shapes
   _, old_beam_size = x.shape[:2]
 
   # Create one-hot mask for the selection
@@ -47,8 +46,13 @@ def _gather_beams(x, beam_indices):
 
 
 def generate_and_apply_logprobs_mask(
-    flat_logprobs, flat_states, packed_csr, csr_indptr, limit, vocab_size
-):
+    flat_logprobs: jnp.ndarray,
+    flat_states: jnp.ndarray,
+    packed_csr: jnp.ndarray,
+    csr_indptr: jnp.ndarray,
+    limit: int,
+    vocab_size: int,
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
   """Performs vectorized sparse candidate extraction from the STATIC CSR matrix.
 
   This kernel replaces irregular "pointer-chasing" trie traversals with a single
@@ -57,23 +61,25 @@ def generate_and_apply_logprobs_mask(
   latency relative to the total constraint set size.
 
   Args:
-      flat_logprobs (jnp.ndarray): Model-predicted log-probabilities of shape
-        (batch_size * beam_size, vocab_size).
-      flat_states (jnp.ndarray): Current trie state IDs for each beam.
-      packed_csr (jnp.ndarray): The flat transition table [Token ID, Next State
-        ID].
-      csr_indptr (jnp.ndarray): The CSR row pointer array identifying segments.
-      limit (int): The maximum branching factor (K) for the current trie depth.
-      vocab_size (int): The total token vocabulary size.
+      flat_logprobs: Model-predicted log-probabilities.
+          Shape: (batch_size * beam_size, vocab_size).
+      flat_states: Current trie state IDs for each beam.
+          Shape: (batch_size * beam_size,).
+      packed_csr: The flat transition table [Token ID, Next State ID].
+          Shape: (num_transitions + V, 2).
+      csr_indptr: The CSR row pointer array identifying segments.
+          Shape: (num_states + 2,).
+      limit: The maximum branching factor (K) for the current trie depth.
+      vocab_size: The total token vocabulary size (V).
 
   Returns:
-      tuple: A tuple containing:
-          - candidate_logprobs (jnp.ndarray): Log-probs for valid children,
-          shape (B*M, K).
-          - dense_indices (jnp.ndarray): Token IDs for valid children, shape
-          (B*M, K).
-          - dense_data (jnp.ndarray): Next state IDs for valid children, shape
-          (B*M, K).
+      A tuple containing:
+          - candidate_logprobs: Log-probs for valid children.
+              Shape: (batch_size * beam_size, K).
+          - candidate_token_ids: Token IDs for valid children.
+              Shape: (batch_size * beam_size, K).
+          - candidate_next_states: Next state IDs for valid children.
+              Shape: (batch_size * beam_size, K).
   """
   # 1. Fetch Sparse Rows (Burst Read)
   starts = csr_indptr[flat_states]
@@ -81,29 +87,29 @@ def generate_and_apply_logprobs_mask(
 
   # Create a grid of offsets to gather exactly 'limit' (K) candidates per state.
   offsets = jnp.arange(limit)
-  # Broadcast: (Batch*Beam, 1) + (1, Limit) -> (Batch*Beam, Limit)
+  # Broadcast: (B*M, 1) + (1, K) -> (B*M, K)
   gather_indices = starts[:, None] + offsets[None, :]
 
   # 2. Gather Data from CSR
   gathered_vals = jnp.take(
       packed_csr, gather_indices, axis=0, mode="fill", fill_value=0
   )
-  dense_indices = gathered_vals[:, :, 0]  # Token IDs
-  dense_data = gathered_vals[:, :, 1]  # Next States
+  candidate_token_ids = gathered_vals[:, :, 0]
+  candidate_next_states = gathered_vals[:, :, 1]
 
   # 3. Logprob Gathering
   # Clamp indices to ensure we never gather from 'vocab_size' (which is OOB).
   # We use (vocab_size - 1) as a safe dummy index.
-  safe_dense_indices = jnp.clip(dense_indices, max=vocab_size - 1)
+  safe_token_ids = jnp.clip(candidate_token_ids, max=vocab_size - 1)
   candidate_logprobs = jnp.take_along_axis(
-      flat_logprobs, safe_dense_indices, axis=1
+      flat_logprobs, safe_token_ids, axis=1
   )
 
   # 4. Validity Masking
   valid_mask = offsets[None, :] < actual_lens[:, None]
   safe_logprobs = jnp.where(valid_mask, candidate_logprobs, -jnp.inf)
 
-  return safe_logprobs, dense_indices, dense_data
+  return safe_logprobs, candidate_token_ids, candidate_next_states
 
 
 class RandomModel:
@@ -113,19 +119,21 @@ class RandomModel:
   computational overhead of a real neural network.
   """
 
-  def __init__(self, vocab_size):
+  def __init__(self, vocab_size: int):
     self.vocab_size = vocab_size
 
-  def __call__(self, input_ids, key):
+  def __call__(
+      self, input_ids: jnp.ndarray, key: jax.random.PRNGKey
+  ) -> tuple[jnp.ndarray, jax.random.PRNGKey]:
     """Generates random logits for the next token prediction.
 
     Args:
-        input_ids (jnp.ndarray): Shape (batch_size, seq_len)
-        key (jax.random.PRNGKey): JAX PRNG key.
+        input_ids: Shape (batch_size, seq_len).
+        key: JAX PRNG key.
 
     Returns:
-        tuple: (logits, next_key)
-            - logits: Shape (batch_size, 1, vocab_size)
+        A tuple of (logits, next_key):
+            - logits: Shape (batch_size, 1, vocab_size).
             - next_key: The updated PRNG key.
     """
     batch_size = input_ids.shape[0]
@@ -152,51 +160,58 @@ class RandomModel:
     ),
 )
 def sparse_transition_jax(
-    model,
-    key,
-    batch_size,
-    beam_size,
-    tokens_per_beam,
-    start_token,
-    max_sample_len,
-    vocab_size,
-    max_branch_factors,
-    packed_csr,
-    csr_indptr,
-    start_mask,
-    dense_mask,
-    dense_states,
-    d_dense=2,
-):
+    model: Callable,
+    key: jax.random.PRNGKey,
+    batch_size: int,
+    beam_size: int,
+    tokens_per_beam: int,
+    start_token: int,
+    max_sample_len: int,
+    vocab_size: int,
+    max_branch_factors: tuple[int, ...],
+    packed_csr: jnp.ndarray,
+    csr_indptr: jnp.ndarray,
+    start_mask: jnp.ndarray,
+    dense_mask: jnp.ndarray,
+    dense_states: jnp.ndarray,
+    d_dense: int = 2,
+) -> jnp.ndarray:
   """Main harness for STATIC constrained beam search using a JAX model.
 
-  This function executes the full autoregressive decoding loop. It uses a hybrid
-  approach, specializing the first 'd_dense' codewords into dense lookup tables
-  to maximize throughput on "hot" paths, and using a CSR matrix for the
+  Executes the full autoregressive decoding loop. Uses a hybrid approach,
+  specializing the first `d_dense` codewords into dense lookup tables to
+  maximize throughput on "hot" paths, and using a CSR matrix for the
   high-cardinality "sparse tail".
 
   Args:
-      model (Callable): A callable (or object) that takes (input_ids, key) and
-        returns (logits, new_key).
-      key (jax.random.PRNGKey): Initial JAX PRNG key.
-      batch_size (int): Number of sequences to decode in parallel.
-      beam_size (int): Number of beams to maintain per sequence.
-      tokens_per_beam (int): Number of candidate tokens to consider per beam.
-      start_token (int): Token ID used to initiate decoding (BOS/PAD).
-      max_sample_len (int): Length (L) of the Semantic IDs being decoded.
-      vocab_size (int): Size of the token vocabulary.
-      max_branch_factors (tuple): Maximum branching factors per level.
-      packed_csr (jnp.ndarray): Flattened trie transitions (Sparse Tail).
-      csr_indptr (jnp.ndarray): CSR row pointers.
-      start_mask (jnp.ndarray): 1D validity mask for the root (Level 0).
-      dense_mask (jnp.ndarray): d-dimensional dense validity mask.
-      dense_states (jnp.ndarray): d-dimensional dense state table.
-      d_dense (int): Number of initial dense layers.
-          NOTE: In practice, we only support d=1 and d=2 (recommended).
+      model: A callable that takes (input_ids, key) and returns
+          (logits, new_key).
+      key: Initial JAX PRNG key.
+      batch_size: Number of sequences to decode in parallel (B).
+      beam_size: Number of beams to maintain per sequence (M).
+      tokens_per_beam: Number of candidate tokens to consider per beam.
+      start_token: Token ID used to initiate decoding (BOS/PAD).
+      max_sample_len: Length (L) of the Semantic IDs being decoded.
+      vocab_size: Size of the token vocabulary (V).
+      max_branch_factors: Maximum branching factors per level.
+          Length: L.
+      packed_csr: Flattened trie transitions (Sparse Tail).
+          Shape: (num_transitions + V, 2).
+      csr_indptr: CSR row pointers.
+          Shape: (num_states + 2,).
+      start_mask: 1D validity mask for the root (Level 0).
+          Shape: (V,).
+      dense_mask: d_dense-dimensional dense validity mask.
+          Shape: (V,) * d_dense.
+      dense_states: d_dense-dimensional dense state table.
+          Shape: (V,) * d_dense.
+      d_dense: Number of initial dense layers.
+          NOTE: In practice, we only support d_dense=1 and d_dense=2
+          (recommended).
 
   Returns:
-      jnp.ndarray: The decoded token sequences of shape (batch_size, beam_size,
-      L).
+      The decoded token sequences.
+          Shape: (batch_size, beam_size, max_sample_len).
   """
   # --- 1. INITIAL STEP (Codeword 1) ---
   # Create start tokens to prime the model
@@ -236,7 +251,7 @@ def sparse_transition_jax(
     # Apply hybrid dense/sparse masking
     if step < d_dense - 1:
       # --- DENSE SPECIALIZATION ---
-      # Reconstruct previous token from state ID (Valid for d=2)
+      # Reconstruct previous token from state ID (Valid for d_dense=2)
       parent_tokens = (flat_states - 1).astype(jnp.int32)
       masks = dense_mask[parent_tokens]
 
@@ -245,7 +260,6 @@ def sparse_transition_jax(
       topk_logprobs, topk_indices = lax.top_k(flat_logprobs, tokens_per_beam)
 
       # Map winners to next trie states using dense table
-      # JAX supports advanced indexing directly
       next_state_candidates = dense_states[parent_tokens[:, None], topk_indices]
 
       limit = tokens_per_beam

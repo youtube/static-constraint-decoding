@@ -89,19 +89,19 @@ def run_benchmarks():
       if method == "STATIC":
         if "static" not in cache["structs"]:
           # Build STATIC Index (d=2 dense specialization)
-          p_csr, indptr, lmb, s_m, d_m, d_s = build_static_index(
-              cache["sids_np"], v, d=2
+          p_csr, indptr, layer_max_branches, s_m, d_m, d_s = build_static_index(
+              cache["sids_np"], v, dense_lookup_layers=2
           )
           cache["structs"]["static"] = (
               jnp.array(p_csr),
               jnp.array(indptr),
-              lmb,
+              layer_max_branches,
               jnp.array(s_m),
               jnp.array(d_m),
               jnp.array(d_s),
           )
 
-        packed_csr, indptr, lmb, start_mask, dense_mask, dense_states = cache[
+        packed_csr, indptr, layer_max_branches, start_mask, dense_mask, dense_states = cache[
             "structs"
         ]["static"]
 
@@ -115,7 +115,7 @@ def run_benchmarks():
             0,  # start_token
             SID_LEN,
             v,
-            lmb,
+            layer_max_branches,
             packed_csr,
             indptr,
             start_mask,
@@ -135,7 +135,7 @@ def run_benchmarks():
               0,  # start_token
               SID_LEN,
               v,
-              lmb,
+              layer_max_branches,
               packed_csr,
               indptr,
               start_mask,
