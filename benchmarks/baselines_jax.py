@@ -12,6 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
+from collections.abc import Callable
 import functools
 import jax
 from jax import jit
@@ -25,26 +28,22 @@ import numpy as np
 # =============================================================================
 
 
-def _gather_beams(x, beam_indices):
+def _gather_beams(x: jnp.ndarray, beam_indices: jnp.ndarray) -> jnp.ndarray:
   """Efficiently gathers beam data across a batch during the selection step.
 
-  This utility uses one-hot contraction for TPU efficiency to select the top-M
-  sequences from the candidate pool while preserving batch and history
-  dimensions.
-  It is designed to be highly efficient on hardware accelerators by avoiding
-  explicit Python loops.
+  Uses one-hot contraction for TPU efficiency to select the top-M sequences
+  from the candidate pool while preserving batch and history dimensions.
 
   Args:
-      x (jnp.ndarray): The source tensor to gather from, usually of shape
-        (batch_size, old_beam_size, ...).
-      beam_indices (jnp.ndarray): The indices of the beams to select, of shape
-        (batch_size, new_beam_size).
+      x: The source tensor to gather from.
+          Shape: (batch_size, old_beam_size, ...).
+      beam_indices: The indices of the beams to select.
+          Shape: (batch_size, new_beam_size).
 
   Returns:
-      jnp.ndarray: The gathered tensor of shape (batch_size, new_beam_size,
-      ...).
+      The gathered tensor.
+          Shape: (batch_size, new_beam_size, ...).
   """
-  # Extract dimensions from tensor shapes
   _, old_beam_size = x.shape[:2]
 
   # Create one-hot mask for the selection
@@ -72,35 +71,37 @@ def _gather_beams(x, beam_indices):
     ),
 )
 def generic_beam_search_jax(
-    model,
-    key,
-    mask_fn,
-    batch_size,
-    beam_size,
-    tokens_per_beam,
-    max_sample_len,
-    start_token=0,
-):
+    model: Callable,
+    key: jax.random.PRNGKey,
+    mask_fn: Callable,
+    batch_size: int,
+    beam_size: int,
+    tokens_per_beam: int,
+    max_sample_len: int,
+    start_token: int = 0,
+) -> jnp.ndarray:
   """A framework-agnostic harness for constrained beam search benchmarks.
 
-  This function executes a standard autoregressive decoding loop but applies
-  a provided `mask_fn` at every step, including the initial root step. This
-  allows for a fair comparison between different constraint enforcement
-  algorithms (Trie, PPV, Hash) using identical selection and history management.
+  Executes a standard autoregressive decoding loop but applies a provided
+  `mask_fn` at every step, including the initial root step. This allows for a
+  fair comparison between different constraint enforcement algorithms (Trie,
+  PPV, Hash) using identical selection and history management.
 
   Args:
-      model (Callable): A callable (or object) that takes (input_ids, key) and
-        returns (logits, new_key).
-      key (jax.random.PRNGKey): PRNG key for mock logit generation.
-      mask_fn (Callable): The baseline masking function to evaluate.
-      batch_size (int): Number of parallel sequences.
-      beam_size (int): Number of beams to maintain per sequence.
-      tokens_per_beam (int): Number of candidate tokens to consider per beam.
-      max_sample_len (int): The total decoding length (L).
-      start_token (int): Token ID used to initiate decoding (BOS/PAD).
+      model: A callable that takes (input_ids, key) and returns
+          (logits, new_key).
+      key: PRNG key for mock logit generation.
+      mask_fn: The baseline masking function to evaluate. Must accept
+          (logprobs, history, step) and return masked logprobs.
+      batch_size: Number of parallel sequences (B).
+      beam_size: Number of beams to maintain per sequence (M).
+      tokens_per_beam: Number of candidate tokens to consider per beam.
+      max_sample_len: The total decoding length (L).
+      start_token: Token ID used to initiate decoding (BOS/PAD).
 
   Returns:
-      jnp.ndarray: The decoded sequences of shape (batch_size, beam_size, L).
+      The decoded sequences.
+          Shape: (batch_size, beam_size, max_sample_len).
   """
   # --- 1. INITIAL STEP (Root) ---
   # Create start tokens to prime the model
@@ -175,8 +176,16 @@ def generic_beam_search_jax(
 # =============================================================================
 
 
-def build_trie(sids):
-  """Constructs a standard nested dictionary prefix tree on the CPU."""
+def build_trie(sids: np.ndarray) -> dict:
+  """Constructs a standard nested dictionary prefix tree on the CPU.
+
+  Args:
+      sids: Array of Semantic IDs.
+          Shape: (N, L).
+
+  Returns:
+      The root node of the trie (nested dictionaries).
+  """
   trie = {}
   for sid in sids:
     node = trie
@@ -188,16 +197,26 @@ def build_trie(sids):
   return trie
 
 
-def make_trie_mask_fn(trie_root, vocab_size):
+def make_trie_mask_fn(
+    trie_root: dict, vocab_size: int
+) -> Callable:
   """Creates a masking function that calls back to a CPU-based Trie.
 
   This baseline simulates the "pointer-chasing" behavior common in many
   production systems. It uses `jax.pure_callback` to pause accelerator
   execution and retrieve a validity mask from CPU memory at every step.
+
+  Args:
+      trie_root: The root node of the CPU trie.
+      vocab_size: The token vocabulary size (V).
+
+  Returns:
+      A JAX-compatible masking function accepting
+      (logprobs, token_buffer, step).
   """
   all_tokens_set = set(range(vocab_size))
 
-  def python_callback(beams, step):
+  def python_callback(beams: np.ndarray, step: int) -> np.ndarray:
     """Internal Python logic to traverse the dictionary trie."""
     n = beams.shape[0]
     masks = np.zeros((n, vocab_size), dtype=bool)
@@ -244,8 +263,17 @@ def make_trie_mask_fn(trie_root, vocab_size):
 # =============================================================================
 
 
-def build_hash_bitmap(sids):
-  """Creates a static hash bitmap (Bloom filter style) for valid prefixes."""
+def build_hash_bitmap(sids: np.ndarray) -> jnp.ndarray:
+  """Creates a static hash bitmap (Bloom filter style) for valid prefixes.
+
+  Args:
+      sids: Array of Semantic IDs.
+          Shape: (N, L).
+
+  Returns:
+      The bitmap array on device.
+          Shape: (SIZE // 8,) where SIZE = 2^30.
+  """
   BITMAP_BITS = 30
   SIZE = 1 << BITMAP_BITS
   MULTIPLIER = 0x9E371
@@ -266,11 +294,19 @@ def build_hash_bitmap(sids):
   return jnp.array(bitmap)
 
 
-def make_hash_bitmap_fn(bitmap):
+def make_hash_bitmap_fn(bitmap: jnp.ndarray) -> Callable:
   """Creates a hash-based masking function optimized for JAX.
 
   This baseline is accelerator-native but suffers from potential false
   positives and lacks the O(1) candidate selection of the STATIC kernel.
+
+  Args:
+      bitmap: The precomputed hash bitmap.
+          Shape: (SIZE // 8,).
+
+  Returns:
+      A JAX-compatible masking function accepting
+      (logprobs, token_buffer, step).
   """
   BITMAP_BITS = 30
   SIZE = 1 << BITMAP_BITS
@@ -312,12 +348,32 @@ def make_hash_bitmap_fn(bitmap):
 
 
 @functools.partial(jit, static_argnames=["M", "step"])
-def ppv_batch_logic(flat_logprobs, history, step, sorted_sids, M):
+def ppv_batch_logic(
+    flat_logprobs: jnp.ndarray,
+    history: jnp.ndarray,
+    step: int,
+    sorted_sids: jnp.ndarray,
+    M: int,
+) -> jnp.ndarray:
   """Implements the PPV (Parallel Prefix Verification) algorithm.
 
   PPV performs binary search across a sorted list of Semantic IDs to validate
   individual candidate extensions. This baseline corresponds to the method
   described in Ye et al. [30].
+
+  Args:
+      flat_logprobs: Log-probabilities for the current step.
+          Shape: (batch_size, vocab_size).
+      history: Token history for each beam.
+          Shape: (batch_size, max_sample_len).
+      step: The current decoding step index.
+      sorted_sids: The sorted constraint set.
+          Shape: (N, L).
+      M: Number of top-k candidates to verify.
+
+  Returns:
+      Boolean validity mask.
+          Shape: (batch_size, vocab_size).
   """
   batch_size = flat_logprobs.shape[0]
   N = sorted_sids.shape[0]
@@ -391,8 +447,20 @@ def ppv_batch_logic(flat_logprobs, history, step, sorted_sids, M):
   return result_mask.at[jnp.arange(batch_size)[:, None], vt].max(final_valid)
 
 
-def make_ppv_mask_fn(sorted_sids, top_k):
-  """Creates a PPV-based masking function."""
+def make_ppv_mask_fn(
+    sorted_sids: jnp.ndarray, top_k: int
+) -> Callable:
+  """Creates a PPV-based masking function.
+
+  Args:
+      sorted_sids: The sorted constraint set on device.
+          Shape: (N, L).
+      top_k: Number of top candidates to verify per beam.
+
+  Returns:
+      A JAX-compatible masking function accepting
+      (logprobs, token_buffer, step).
+  """
 
   def mask_fn(flat_logprobs, token_buffer, step):
     batch_size = flat_logprobs.shape[0]

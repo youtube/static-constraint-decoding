@@ -14,4 +14,5 @@
 **/dist/
 **/*.egg-info/
 
+# Ignore DS_Store files
 **/.DS_Store

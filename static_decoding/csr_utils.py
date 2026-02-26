@@ -12,41 +12,56 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import gc
 import numpy as np
 
 
-def build_static_index(fresh_sids, vocab_size=2048, d=2):
-  """
-  Constructs a STATIC index (Sparse Transition-Accelerated Trie Index) from Semantic IDs.
+def build_static_index(
+    fresh_sids: np.ndarray,
+    vocab_size: int = 2048,
+    dense_lookup_layers: int = 2,
+) -> tuple[np.ndarray, np.ndarray, tuple[int, ...], np.ndarray, np.ndarray, np.ndarray]:
+  """Constructs a STATIC index (Sparse Transition-Accelerated Trie Index) from Semantic IDs.
 
   This function transforms a prefix tree (trie) into a static, accelerator-compatible
   representation. It uses a hybrid approach:
-  1. A d-dimensional dense lookup table for the "hot" initial layers (first d codewords).
+  1. A dense_lookup_layers-dimensional dense lookup table for the "hot" initial layers
+     (first `dense_lookup_layers` codewords).
   2. A Compressed Sparse Row (CSR) matrix for the high-cardinality "sparse tail"
-      (all codewords from d+1 to L).
+     (all codewords from `dense_lookup_layers + 1` to L).
 
   Args:
-      fresh_sids (np.ndarray): Sorted NumPy array of shape (N, L) containing the
-          tokenized Semantic IDs for the entire corpus.
-      vocab_size (int): The model's token vocabulary size.
-      d (int): Number of initial layers to handle with dense lookups.
-                d=2 corresponds to a V x V table.
+      fresh_sids: Sorted array of Semantic IDs.
+          Shape: (N, L) where N = corpus size, L = SID length.
+      vocab_size: The model's token vocabulary size (V).
+      dense_lookup_layers: Number of initial layers to handle with dense lookups.
+          dense_lookup_layers=2 corresponds to a V x V table.
 
   Returns:
-      packed_csr (np.ndarray): A flat array of [token, next_state] pairs for all transitions;
-                               contains the "cols" and "vals" of the CSR matrix.
-      indptr (np.ndarray): The CSR row pointer array identifying segments in packed_csr.
-      layer_max_branches (tuple): Maximum branching factor for each level L,
-                                  required for static-shape compilation.
-      start_mask (np.ndarray): 1D boolean mask for the very first token (Level 0).
-      dense_mask (np.ndarray): d-dimensional boolean mask for the first d tokens.
-      dense_states (np.ndarray): d-dimensional state ID table for the first d tokens.
+      packed_csr: Flat array of [token, next_state] pairs for all transitions;
+          contains the "cols" and "vals" of the CSR matrix.
+          Shape: (num_transitions + V, 2).
+      indptr: The CSR row pointer array identifying segments in packed_csr.
+          Shape: (num_states + 2,).
+      layer_max_branches: Maximum branching factor for each level L,
+          required for static-shape compilation.
+          Length: L.
+      start_mask: 1D boolean mask for the very first token (Level 0).
+          Shape: (V,).
+      dense_mask: Dense boolean mask for the first `dense_lookup_layers` tokens.
+          Shape: (V,) * dense_lookup_layers.
+      dense_states: Dense state ID table for the first `dense_lookup_layers` tokens.
+          Shape: (V,) * dense_lookup_layers.
   """
   # N is the number of items in the corpus; L is the length of each Semantic ID.
   N, L = fresh_sids.shape
-  if d >= L:
-    raise ValueError(f"d ({d}) must be less than the Semantic ID length L ({L}).")
+  if dense_lookup_layers >= L:
+    raise ValueError(
+        f"dense_lookup_layers ({dense_lookup_layers}) must be less than "
+        f"the Semantic ID length L ({L})."
+    )
 
   # --- 1. INITIAL LEVEL-0 MASK ---
   # We identify which tokens are valid starting points.
@@ -101,40 +116,47 @@ def build_static_index(fresh_sids, vocab_size=2048, d=2):
   # --- 4. EDGE COLLECTION ---
   # We collect all parent -> child transitions.
   # An edge is defined as: (Parent State ID, Token) -> Child State ID.
-  all_p, all_t, all_c = [], [], []
+  all_parents, all_tokens, all_children = [], [], []
   for depth in range(1, L):
     mask = is_new[:, depth]
-    p = state_ids[mask, depth-1]  # ID of the prefix of length 'depth'
-    t = fresh_sids[mask, depth].astype(np.int32)  # The next token
+    parent_ids = state_ids[mask, depth-1]
+    token_ids = fresh_sids[mask, depth].astype(np.int32)
 
     # If we are at the last token, the child state is 0 (terminal).
-    c = state_ids[mask, depth] if depth < L - 1 else np.zeros_like(p, dtype=np.int32)
+    child_ids = (
+        state_ids[mask, depth] if depth < L - 1
+        else np.zeros_like(parent_ids, dtype=np.int32)
+    )
 
-    all_p.append(p)
-    all_t.append(t)
-    all_c.append(c)
+    all_parents.append(parent_ids)
+    all_tokens.append(token_ids)
+    all_children.append(child_ids)
 
   # --- 5. DENSE SPECIALIZATION ---
-  # For the first 'd' layers, we synthesize a dense multi-dimensional tensor.
-  # This allows fast O(1) indexing during the initial (and most frequent) steps.
-  dense_shape = tuple([vocab_size] * d)
+  # For the first 'dense_lookup_layers' layers, we synthesize a dense
+  # multi-dimensional tensor. This allows fast O(1) indexing during the initial
+  # (and most frequent) steps.
+  dense_shape = tuple([vocab_size] * dense_lookup_layers)
   dense_mask = np.zeros(dense_shape, dtype=bool)
   dense_states = np.zeros(dense_shape, dtype=np.int32)
 
-  # We index the table using the first 'd' codewords.
-  indices = tuple(fresh_sids[:, i].astype(np.int32) for i in range(d))
+  # We index the table using the first 'dense_lookup_layers' codewords.
+  indices = tuple(
+      fresh_sids[:, i].astype(np.int32) for i in range(dense_lookup_layers)
+  )
 
-  # The value in 'dense_states' is the ID of the node reached after 'd' tokens.
-  final_dense_ids = state_ids[:, d - 1]
+  # The value in 'dense_states' is the ID of the node reached after
+  # 'dense_lookup_layers' tokens.
+  final_dense_ids = state_ids[:, dense_lookup_layers - 1]
 
   dense_mask[indices] = True
   dense_states[indices] = final_dense_ids
 
   # --- 6. CSR CONSTRUCTION ---
   # Combine all collected edges into a flat format.
-  parents = np.concatenate(all_p)
-  tokens = np.concatenate(all_t)
-  children = np.concatenate(all_c)
+  parents = np.concatenate(all_parents)
+  tokens = np.concatenate(all_tokens)
+  children = np.concatenate(all_children)
 
   del state_ids, is_new; gc.collect()
 
@@ -146,32 +168,36 @@ def build_static_index(fresh_sids, vocab_size=2048, d=2):
   # --- 7. LAYER MAX BRANCHES (Static Compilation Metadata) ---
   # Accelerator compilers require static output shapes. We calculate the
   # maximum number of possible child tokens at each level of the trie.
-  lmb = [np.sum(start_mask)]  # Max branches out of the root.
+  layer_max_branches = [np.sum(start_mask)]  # Max branches out of the root.
 
   # Max branches out of Level-0 tokens (IDs 1 to vocab_size).
   l0_counts = counts[1:vocab_size + 1]
-  lmb.append(int(l0_counts.max()) if len(l0_counts) > 0 else 0)
+  layer_max_branches.append(int(l0_counts.max()) if len(l0_counts) > 0 else 0)
 
   # Max branches out of subsequent nodes.
   for (start_id, end_id) in depth_id_ranges:
     if start_id < len(counts):
       layer_counts = counts[start_id:end_id]
-      lmb.append(int(layer_counts.max()) if len(layer_counts) > 0 else 0)
+      layer_max_branches.append(
+          int(layer_counts.max()) if len(layer_counts) > 0 else 0
+      )
     else:
-      lmb.append(0)
+      layer_max_branches.append(0)
 
   # Pad to SID length L.
-  while len(lmb) < L:
-    lmb.append(1)
+  while len(layer_max_branches) < L:
+    layer_max_branches.append(1)
 
   # --- 8. FINAL PACKING ---
   # We create a flat transition table [Token, NextState].
   # We add a padding row at the end to handle OOB indexing in compiled kernels.
-  raw_indices = np.concatenate([tokens, np.full(vocab_size, vocab_size, dtype=np.int32)])
+  raw_indices = np.concatenate(
+      [tokens, np.full(vocab_size, vocab_size, dtype=np.int32)]
+  )
   raw_data = np.concatenate([children, np.zeros(vocab_size, dtype=np.int32)])
   indptr = np.append(indptr, indptr[-1] + vocab_size)
 
   # 'ascontiguousarray' ensures optimal GPU HBM burst throughput.
   packed_csr = np.ascontiguousarray(np.vstack([raw_indices, raw_data]).T)
 
-  return packed_csr, indptr, tuple(lmb), start_mask, dense_mask, dense_states
+  return packed_csr, indptr, tuple(layer_max_branches), start_mask, dense_mask, dense_states

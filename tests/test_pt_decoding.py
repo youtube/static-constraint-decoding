@@ -55,8 +55,8 @@ def run_validity_check(
 
   # 2. Build the STATIC Index
   # This synthesizes the Start Mask, Dense Specialization tables, and CSR matrix
-  p_csr, indptr, lmb, s_mask, d_mask, d_states = build_static_index(
-      sids, vocab_size, d=d_dense
+  p_csr, indptr, layer_max_branches, s_mask, d_mask, d_states = (
+      build_static_index(sids, vocab_size, dense_lookup_layers=d_dense)
   )
 
   # 3. Instantiate the Model and Index on Device
@@ -81,7 +81,7 @@ def run_validity_check(
       start_token=0,
       max_sample_len=sid_len,
       vocab_size=vocab_size,
-      max_branch_factors=lmb,
+      max_branch_factors=layer_max_branches,
       packed_csr=p_csr_t,
       csr_indptr=indptr_t,
       start_mask=s_mask_t,
