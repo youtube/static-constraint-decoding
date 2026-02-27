@@ -146,7 +146,7 @@ This project is intended for demonstration purposes only. It is not intended for
 
 ## Citation
 
-If you find this work useful, please cite the following paper:
+If you find this work useful, please cite our paper:
 ```bibtex
 @misc{su2026vectorizingtrieefficientconstrained,
       title={Vectorizing the Trie: Efficient Constrained Decoding for LLM-based Generative Retrieval on Accelerators},
