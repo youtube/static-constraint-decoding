@@ -1,6 +1,6 @@
 # STATIC: An Accelerator-Native Framework for Constrained Decoding
 
-This repository provides the official implementation of the **STATIC (Sparse Transition-Accelerated Trie Index for Constrained decoding)** framework. STATIC is a high-performance method for enforcing outputs to stay within a prespecified set during autoregressive decoding from large language models, designed for maximum efficiency on modern hardware accelerators like GPUs and TPUs.
+This repository provides the official implementation of the **STATIC (Sparse Transition-Accelerated Trie Index for Constrained decoding)** framework, as described in [Su et al., 2026](https://arxiv.org/abs/2602.22647). STATIC is a high-performance method for enforcing outputs to stay within a prespecified set during autoregressive decoding from large language models, designed for maximum efficiency on modern hardware accelerators like GPUs and TPUs.
 
 This implementation includes:
 - Core algorithms for both JAX/TPU and PyTorch/GPU settings.
@@ -143,3 +143,18 @@ This project is licensed under the Apache License, Version 2.0. See the license 
 This is not an officially supported Google product. This project is not eligible for the [Google Open Source Software Vulnerability Rewards Program](https://bughunters.google.com/open-source-security).
 
 This project is intended for demonstration purposes only. It is not intended for use in a production environment.
+
+## Citation
+
+If you find this work useful, please cite the following paper:
+```bibtex
+@misc{su2026vectorizingtrieefficientconstrained,
+      title={Vectorizing the Trie: Efficient Constrained Decoding for LLM-based Generative Retrieval on Accelerators},
+      author={Zhengyang Su and Isay Katsman and Yueqi Wang and Ruining He and Lukasz Heldt and Raghunandan Keshavan and Shao-Chuan Wang and Xinyang Yi and Mingyan Gao and Onkar Dalal and Lichan Hong and Ed Chi and Ningren Han},
+      year={2026},
+      eprint={2602.22647},
+      archivePrefix={arXiv},
+      primaryClass={cs.IR},
+      url={https://arxiv.org/abs/2602.22647},
+}
+```
