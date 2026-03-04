@@ -1,6 +1,11 @@
 # STATIC: An Accelerator-Native Framework for Constrained Decoding
 
-This repository provides the official implementation of the **STATIC (Sparse Transition-Accelerated Trie Index for Constrained decoding)** framework, as described in [Su et al., 2026](https://arxiv.org/abs/2602.22647). STATIC is a high-performance method for enforcing outputs to stay within a prespecified set during autoregressive decoding from large language models, designed for maximum efficiency on modern hardware accelerators like GPUs and TPUs.
+[![arXiv](https://img.shields.io/badge/arXiv-2602.22647-b31b1b.svg)](https://arxiv.org/abs/2602.22647)
+[![Demo Colab](https://img.shields.io/badge/Demo_Colab-F9AB00?logo=googlecolab&color=525252)](https://colab.research.google.com/github/youtube/static-constraint-decoding/blob/main/example.ipynb)
+
+This repository provides the official implementation of the **STATIC (Sparse Transition-Accelerated Trie Index for Constrained decoding)** constraint decoding framework, introduced in the paper [Vectorizing the Trie: Efficient Constrained Decoding for LLM-based Generative Retrieval on Accelerators (Su et al., 2026)](https://arxiv.org/abs/2602.22647). 
+
+STATIC is a high-performance algorithm for enforcing outputs to stay within a prespecified set of token sequences during autoregressive decoding of large language models (LLMs), designed for maximum efficiency on modern hardware accelerators like GPUs and TPUs.
 
 This implementation includes:
 - Core algorithms for both JAX/TPU and PyTorch/GPU settings.
@@ -11,7 +16,7 @@ This implementation includes:
 
 - **Accelerator-Native Design**: The core masking kernel is implemented as a single, vectorized operation, avoiding expensive CPU-accelerator synchronization and pointer-chasing common in traditional trie-based methods.
 - **Hybrid Data Structure**: STATIC uses a novel hybrid index. It represents the "hot" initial layers of a prefix tree with a dense lookup table for O(1) access and the high-cardinality "sparse tail" with a Compressed Sparse Row (CSR) matrix for memory efficiency.
-- **High Performance**: Achieves near-constant-time (O(1)) performance with respect to the total number of constraints, and logarithmic performance (O(log K)) relative to the branching factor (K), significantly outperforming traditional baselines.
+- **High Performance**: Achieves O(1) I/O complexity with respect to the total number of constraints, and logarithmic performance (O(log K)) relative to the branching factor (K), significantly outperforming traditional baselines.
 - **Framework Agnostic**: Includes end-to-end, tested implementations for both major deep learning frameworks: JAX and PyTorch.
 
 ## How It Works
@@ -98,7 +103,7 @@ The repository includes `example.ipynb`, a notebook that provides a simple, hand
 2.  Building the Index: Using `build_static_index` to convert the SIDs into the hybrid dense/sparse STATIC representation.
 3.  Running Decoding: Executing a constrained beam search with `sparse_transition_jax` and a mock `RandomModel` to generate valid sequences on an accelerator.
 
-To run the example, start a Jupyter Notebook server and open `example.ipynb`.
+To run the example, start a Jupyter Notebook server and open `example.ipynb`, or open it directly in [Google Colab](https://colab.research.google.com/github/youtube/static-constraint-decoding/blob/main/example.ipynb).
 
 ### Running Tests
 
