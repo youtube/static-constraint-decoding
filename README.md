@@ -153,13 +153,15 @@ This project is intended for demonstration purposes only. It is not intended for
 
 If you find this work useful, please cite our paper:
 ```bibtex
-@misc{su2026vectorizingtrieefficientconstrained,
-      title={Vectorizing the Trie: Efficient Constrained Decoding for LLM-based Generative Retrieval on Accelerators},
-      author={Zhengyang Su and Isay Katsman and Yueqi Wang and Ruining He and Lukasz Heldt and Raghunandan Keshavan and Shao-Chuan Wang and Xinyang Yi and Mingyan Gao and Onkar Dalal and Lichan Hong and Ed Chi and Ningren Han},
-      year={2026},
-      eprint={2602.22647},
-      archivePrefix={arXiv},
-      primaryClass={cs.IR},
-      url={https://arxiv.org/abs/2602.22647},
+@inproceedings{su2026static,
+  author    = {Su, Zhengyang and Katsman, Isay and Wang, Yueqi and He, Ruining and Heldt, Lukasz and Keshavan, Raghunandan and Wang, Shao-Chuan and Yi, Xinyang and Gao, Mingyan and Dalal, Onkar and Hong, Lichan and Chi, Ed H. and Han, Ningren},
+  title     = {Vectorizing the Trie: Efficient Constrained Decoding for LLM-based Generative Retrieval on Accelerators},
+  booktitle = {Proceedings of the 32nd ACM SIGKDD Conference on Knowledge Discovery and Data Mining V.2},
+  series    = {KDD '26},
+  pages     = {8009--8020},
+  year      = {2026},
+  publisher = {Association for Computing Machinery},
+  doi       = {10.1145/3770855.3818506},
+  url       = {https://doi.org/10.1145/3770855.3818506}
 }
 ```
